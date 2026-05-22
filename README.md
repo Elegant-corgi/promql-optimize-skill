@@ -126,6 +126,8 @@ $env:PROMQL_OPTIMIZE_MAX_SERIES_MATCHERS = "5"
 ~/.codex/skills/promql-optimize/config/promql-profiles.json
 ```
 
+用户可以配置本地静态环境文件来启用选型列表：在 `config` 目录下参考 `promql-profiles.example.json` 的格式生成 `promql-profiles.json`，下一次列出本地静态环境时就会生效。安装后的 skill 读取路径是 `~/.codex/skills/promql-optimize/config/promql-profiles.json`；如果在仓库中调试根目录 wrapper，则读取仓库根目录的 `config/promql-profiles.json`。
+
 先从示例创建本地配置：
 
 ```powershell
