@@ -1,0 +1,11 @@
+{
+  "zhipu": {
+    "aliases": [
+      "智谱",
+      "Zhipu"
+    ],
+    "baseUrl": "https://prometheus.example.com",
+    "datasource": "prometheus",
+    "tokenEnv": "PROMQL_ZHIPU_TOKEN"
+  }
+}

@@ -15,6 +15,7 @@
 - 支持 Prometheus 和 VictoriaMetrics 兼容 API。
 - 通过只读 API 采集诊断证据。
 - 使用环境变量配置连接信息，不需要配置文件。
+- 支持项目级 PromQL profile wrapper，在多个后端地址之间快速切换。
 - 默认限制查询范围，避免诊断过程本身给监控后端造成压力。
 - 生成优化后的 PromQL 建议。
 - 生成 recording rule YAML 草案。
@@ -39,7 +40,10 @@
 |           |-- main.go
 |           `-- main_test.go
 |-- scripts/
+|   |-- promql-profile.ps1
 |   `-- sync-skill.ps1
+|-- config/
+|   `-- promql-profiles.example.json
 |-- go.work
 `-- README.md
 ```
@@ -83,6 +87,46 @@ $env:PROMQL_OPTIMIZE_MAX_SERIES_MATCHERS = "5"
 ```
 
 认证信息只从环境变量读取。工具不会把 token 或自定义认证 header 写入文件，也不会在正常输出中打印它们。
+
+## 多 PromQL 地址切换
+
+如果平时需要连接多个 Prometheus 或 VictoriaMetrics 地址，可以使用项目级 profile wrapper，避免反复手动切换 `PROMQL_OPTIMIZE_*`。
+
+先从示例创建本地配置：
+
+```powershell
+Copy-Item .\config\promql-profiles.example.json .\config\promql-profiles.json
+```
+
+编辑 `config\promql-profiles.json`，只写地址、数据源类型和 token 环境变量名，不写 token 明文：
+
+```json
+{
+  "zhipu": {
+    "aliases": ["智谱", "Zhipu"],
+    "baseUrl": "https://prometheus.example.com",
+    "datasource": "prometheus",
+    "tokenEnv": "PROMQL_ZHIPU_TOKEN"
+  }
+}
+```
+
+一次性配置 token：
+
+```powershell
+[Environment]::SetEnvironmentVariable("PROMQL_ZHIPU_TOKEN", "你的token", "User")
+```
+
+日常使用：
+
+```powershell
+. .\scripts\promql-profile.ps1
+Use-PromQLProfile zhipu
+Get-PromQLProfile
+Invoke-PromQLProbe -query "up"
+```
+
+`config\promql-profiles.json` 和 `config\promql-current-profile` 默认被 `.gitignore` 忽略，避免误提交内部地址和本地状态。`Get-PromQLProfile` 只显示 token 变量名和是否已配置，不会输出 token。
 
 ## 在 Codex 中使用
 
