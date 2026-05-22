@@ -11,11 +11,15 @@ Use this skill to diagnose PromQL performance problems and produce practical rew
 
 1. Clarify the target query and context:
    - PromQL expression, intended dashboard or alert use, time range, step, datasource type, and observed symptom.
+   - Before optimizing, decide whether the user explicitly asked to use a real datasource. Treat datasource names, environment configuration, or phrases such as "real datasource", "live evidence", or "allow probe" as explicit intent.
+   - If the user asks to optimize or analyze PromQL but does not explicitly indicate real datasource usage, stop before giving optimization output and ask: `未识别到你要使用真实数据源。是否在不使用真实数据源的情况下，仅进行静态优化？`
+   - Continue with static optimization only after the user confirms static-only analysis. If the user asks for real datasource usage, first confirm the API environment variables are set.
    - If the user wants live evidence, confirm the API environment variables are set.
 2. Inspect the query statically before calling an API:
    - Identify wide ranges, high-cardinality labels, regex matchers, joins, subqueries, histogram usage, aggregation order, and repeated expensive expressions.
    - Load `references/promql-optimization-patterns.md` for detailed rewrite patterns.
 3. Collect live evidence only when useful:
+   - Do not call `promql-probe` only because local configuration or defaults exist; require explicit user intent to use a real datasource.
    - Use `scripts/promql-probe` or run `go run ./scripts/promql-probe` from this skill directory.
    - Keep probes narrow. Prefer instant query, labels, metadata, or short query_range windows before series scans.
    - Never print tokens, custom headers, or private endpoints in the final answer.
