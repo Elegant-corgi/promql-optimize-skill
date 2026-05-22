@@ -1,15 +1,13 @@
 ﻿Set-StrictMode -Version Latest
 
-$script:PromQLProjectRoot = Split-Path -Parent $PSScriptRoot
-$script:PromQLProfileConfigPath = Join-Path $script:PromQLProjectRoot "config\promql-profiles.json"
-$script:PromQLProfileExamplePath = Join-Path $script:PromQLProjectRoot "config\promql-profiles.example.json"
-$script:PromQLCurrentProfilePath = Join-Path $script:PromQLProjectRoot "config\promql-current-profile"
-$script:PromQLProbeDir = Join-Path $script:PromQLProjectRoot "promql-optimize\scripts\promql-probe"
+$script:PromQLSkillRoot = Split-Path -Parent $PSScriptRoot
+$script:PromQLProfileConfigPath = Join-Path $script:PromQLSkillRoot "config\promql-profiles.json"
+$script:PromQLProfileExamplePath = Join-Path $script:PromQLSkillRoot "config\promql-profiles.example.json"
+$script:PromQLCurrentProfilePath = Join-Path $script:PromQLSkillRoot "config\promql-current-profile"
+$script:PromQLProbeDir = Join-Path $script:PromQLSkillRoot "scripts\promql-probe"
 
 function Read-PromQLProfileConfig {
-    param(
-        [string]$ConfigPath = $script:PromQLProfileConfigPath
-    )
+    param([string]$ConfigPath = $script:PromQLProfileConfigPath)
 
     if (-not (Test-Path -LiteralPath $ConfigPath)) {
         throw "PromQL profile 配置不存在：$ConfigPath。可从示例复制：$script:PromQLProfileExamplePath"
@@ -28,10 +26,7 @@ function Read-PromQLProfileConfig {
 }
 
 function Get-PromQLProfileNames {
-    param(
-        [object]$Config
-    )
-
+    param([object]$Config)
     return @($Config.PSObject.Properties | ForEach-Object { $_.Name })
 }
 
@@ -148,7 +143,7 @@ function Use-PromQLProfile {
 
     $directory = Split-Path -Parent $script:PromQLCurrentProfilePath
     if (-not (Test-Path -LiteralPath $directory)) {
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        New-Item -ItemType Directory -Path $directory | Out-Null
     }
 
     Set-Content -LiteralPath $script:PromQLCurrentProfilePath -Value $resolvedName -Encoding UTF8 -NoNewline
@@ -156,9 +151,7 @@ function Use-PromQLProfile {
 }
 
 function Get-PromQLProfile {
-    param(
-        [string]$Name
-    )
+    param([string]$Name)
 
     $config = Read-PromQLProfileConfig
     if ([string]::IsNullOrWhiteSpace($Name)) {

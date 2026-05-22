@@ -1,6 +1,6 @@
 interface:
   display_name: "PromQL Optimize"
   short_description: "诊断 PromQL 慢查询并生成优化建议与 recording rule 草案"
-  default_prompt: "Use $promql-optimize to analyze this PromQL query, collect safe API evidence, and suggest optimized PromQL plus recording rules."
+  default_prompt: "Use $promql-optimize to analyze this PromQL query. Ask before using any real datasource, and suggest optimized PromQL plus recording rules."
 policy:
   allow_implicit_invocation: true

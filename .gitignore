@@ -2,3 +2,5 @@
 promql-optimize/scripts/promql-probe/.gocache/
 config/promql-profiles.json
 config/promql-current-profile
+promql-optimize/config/promql-profiles.json
+promql-optimize/config/promql-current-profile

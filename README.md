@@ -7,14 +7,14 @@
 - Grafana 面板查询很慢，需要定位 PromQL 成本来源。
 - 告警表达式过于复杂，需要拆分为 recording rule。
 - 查询中存在高基数 label、宽时间范围、正则匹配、join 或 histogram quantile，需要评估优化空间。
-- 希望 Codex 结合真实 Prometheus/VictoriaMetrics API 证据，而不只做静态分析。
+- 明确希望 Codex 结合真实 Prometheus/VictoriaMetrics API 证据，而不只做静态分析。
 
 ## 特性
 
 - 分析常见 PromQL 性能问题。
 - 支持 Prometheus 和 VictoriaMetrics 兼容 API。
-- 通过只读 API 采集诊断证据。
-- 使用环境变量配置连接信息，不需要配置文件。
+- 仅在用户明确确认后，通过只读 API 采集诊断证据。
+- 使用环境变量配置连接信息，也可在明确授权后通过本地 profile wrapper 切换多数据源。
 - 支持项目级 PromQL profile wrapper，在多个后端地址之间快速切换。
 - 默认限制查询范围，避免诊断过程本身给监控后端造成压力。
 - 生成优化后的 PromQL 建议。
@@ -30,11 +30,14 @@
 |   |-- SKILL.md
 |   |-- agents/
 |   |   `-- openai.yaml
+|   |-- config/
+|   |   `-- promql-profiles.example.json
 |   |-- references/
 |   |   |-- promql-optimization-patterns.md
 |   |   |-- rule-generation.md
 |   |   `-- safety.md
 |   `-- scripts/
+|       |-- promql-profile.ps1
 |       `-- promql-probe/
 |           |-- go.mod
 |           |-- main.go
@@ -64,6 +67,31 @@
 
 安装后，可以在 Codex 中通过 `$promql-optimize` 调用这个 skill。
 
+## 真实数据源确认规则
+
+`$promql-optimize` 默认先确认分析模式。只给出数据源名称、profile 名称、集群名称或类似 `数据源：xxx` 的上下文，不代表允许连接真实 API，也不代表当前环境已经可用。
+
+如果用户输入优化方案后，未识别到可用真实环境，Codex 必须先停下并给出选型：
+
+```text
+未识别到可用真实环境。请选择本次分析方式：
+1. 使用本地静态环境配置：我会列出可用 profile，请输入序号或名称确认。
+2. 使用本次会话临时环境变量：我会提示需要设置哪些 PROMQL_OPTIMIZE_* 变量；如需 token，请按示例在本机环境中配置。
+3. 不使用真实环境：直接进行静态 PromQL 优化。
+```
+
+可用真实环境指当前进程已经设置 `PROMQL_OPTIMIZE_BASE_URL`，或用户已经明确选择本地 wrapper profile。本地静态 profile 列表只能展示 profile 名、别名、数据源类型、token/header 环境变量名和是否已配置；不能展示真实地址、token、header 值或内部端点。
+
+用户选择本地静态环境后，可以用安全列表函数查看候选项：
+
+```powershell
+. "$HOME\.codex\skills\promql-optimize\scripts\promql-profile.ps1"
+Get-PromQLProfileList
+Use-PromQLProfile zhipu
+```
+
+只有用户确认选择 profile 或配置临时环境变量后，才运行只读探测；用户选择不使用真实环境时，直接进入静态 PromQL 优化。
+
 ## 配置真实 API
 
 如果只做静态 PromQL 分析，不需要配置任何环境变量。
@@ -90,15 +118,21 @@ $env:PROMQL_OPTIMIZE_MAX_SERIES_MATCHERS = "5"
 
 ## 多 PromQL 地址切换
 
-如果平时需要连接多个 Prometheus 或 VictoriaMetrics 地址，可以使用项目级 profile wrapper，避免反复手动切换 `PROMQL_OPTIMIZE_*`。
+如果平时需要连接多个 Prometheus 或 VictoriaMetrics 地址，可以使用 skill 内置的 profile wrapper，避免反复手动切换 `PROMQL_OPTIMIZE_*`。profile wrapper 只用于人工或已明确授权的真实 API 探测，不会让 Codex 因为提示词中出现数据源名称就自动探测。
+
+安装后，配置文件放在已安装 skill 目录中：
+
+```text
+~/.codex/skills/promql-optimize/config/promql-profiles.json
+```
 
 先从示例创建本地配置：
 
 ```powershell
-Copy-Item .\config\promql-profiles.example.json .\config\promql-profiles.json
+Copy-Item "$HOME\.codex\skills\promql-optimize\config\promql-profiles.example.json" "$HOME\.codex\skills\promql-optimize\config\promql-profiles.json"
 ```
 
-编辑 `config\promql-profiles.json`，只写地址、数据源类型和 token 环境变量名，不写 token 明文：
+编辑 `~/.codex/skills/promql-optimize/config/promql-profiles.json`，只写地址、数据源类型和 token 环境变量名，不写 token 明文：
 
 ```json
 {
@@ -107,26 +141,34 @@ Copy-Item .\config\promql-profiles.example.json .\config\promql-profiles.json
     "baseUrl": "https://prometheus.example.com",
     "datasource": "prometheus",
     "tokenEnv": "PROMQL_ZHIPU_TOKEN"
+  },
+  "aliyun": {
+    "aliases": ["阿里", "Aliyun"],
+    "baseUrl": "https://victoriametrics.example.com",
+    "datasource": "victoriametrics",
+    "tokenEnv": "PROMQL_ALIYUN_TOKEN"
   }
 }
 ```
 
-一次性配置 token：
+如果 profile 需要 token，可一次性配置对应的 token 环境变量：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("PROMQL_ZHIPU_TOKEN", "你的token", "User")
+[Environment]::SetEnvironmentVariable("PROMQL_ALIYUN_TOKEN", "你的token", "User")
 ```
 
 日常使用：
 
 ```powershell
-. .\scripts\promql-profile.ps1
+. "$HOME\.codex\skills\promql-optimize\scripts\promql-profile.ps1"
+Get-PromQLProfileList
 Use-PromQLProfile zhipu
 Get-PromQLProfile
 Invoke-PromQLProbe -query "up"
 ```
 
-`config\promql-profiles.json` 和 `config\promql-current-profile` 默认被 `.gitignore` 忽略，避免误提交内部地址和本地状态。`Get-PromQLProfile` 只显示 token 变量名和是否已配置，不会输出 token。
+安装目录中的 `config\promql-profiles.json` 和 `config\promql-current-profile` 是用户本地状态；同步脚本会保留它们，不会用示例配置覆盖。`Get-PromQLProfile` 只显示 token 变量名和是否已配置，不会输出 token。
 
 ## 在 Codex 中使用
 
@@ -148,7 +190,7 @@ Time range: last 1h
 Step: 60s
 ```
 
-Codex 会根据 skill 流程先做静态分析，再在需要时调用只读探测工具，最后输出诊断证据、优化建议、recording rule 草案和验证方式。
+Codex 会根据 skill 流程先确认本次分析方式；可以选择本地静态 profile、当次会话临时环境变量，或完全不使用真实环境。只有用户明确确认真实环境后，才调用只读探测工具。最终输出诊断证据、优化建议、recording rule 草案和验证方式。
 
 ## promql-probe CLI
 
