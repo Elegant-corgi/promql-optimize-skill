@@ -68,6 +68,39 @@ If regex is unavoidable:
 sum(rate(container_cpu_usage_seconds_total{pod=~"api-[a-z0-9-]+", namespace="prod"}[5m]))
 ```
 
+## Alert Split Exclusivity
+
+Symptom:
+
+```promql
+# Generic hardware alert
+ipmi_sensor_state{type!~"Entity Presence|System Event"} > 0
+
+# Dedicated peer alert
+ipmi_sensor_state{type="Event Logging Disabled"} > 0
+```
+
+Problem:
+
+- The dedicated peer alert still matches the generic alert because `Event Logging Disabled` is not excluded from the generic selector.
+- Peer alert splits should not create duplicate notifications for the same series unless the user explicitly asks for overlapping coverage.
+
+Prefer:
+
+```promql
+# Generic hardware alert
+ipmi_sensor_state{type!~"Entity Presence|System Event|Event Logging Disabled"} > 0
+
+# Dedicated peer alert
+ipmi_sensor_state{type="Event Logging Disabled"} > 0
+```
+
+Check:
+
+- List the label values claimed by dedicated peer alerts.
+- Ensure every claimed value is excluded from generic or catch-all peer alerts.
+- If live evidence is available, compare candidate peer alerts with `and` or selector reasoning to confirm no shared output series.
+
 ## Wide Range and Query Range
 
 Symptom:

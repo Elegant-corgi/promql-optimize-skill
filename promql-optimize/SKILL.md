@@ -40,12 +40,15 @@ Use this skill to diagnose PromQL performance problems and produce practical rew
    - Give an optimized PromQL expression when possible.
    - Draft recording rule YAML when the query repeats expensive work or powers dashboards/alerts.
    - Load `references/rule-generation.md` for rule naming and YAML conventions.
+   - When splitting one alert into peer alerts, make the split rules mutually exclusive. If a label value is handled by a dedicated peer alert, explicitly exclude that value from any generic or catch-all peer alert. Do not output overlapping peer alert rules unless the user explicitly asks for duplicate coverage or the rules are not peers.
+   - For alert split recommendations, load `references/promql-optimization-patterns.md` and apply the alert split exclusivity pattern before finalizing PromQL.
 5. Report results in this order:
    - Diagnosis summary.
    - Evidence from API or static analysis.
    - Why the query is slow or risky.
    - Optimized PromQL.
    - Recording rule YAML draft.
+   - Alert split overlap check, if peer alert rules are recommended.
    - Verification commands or checks.
    - Risks and tradeoffs.
 
