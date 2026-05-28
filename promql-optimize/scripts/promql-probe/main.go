@@ -91,6 +91,9 @@ func run(args []string, stdout, stderr io.Writer, transport http.RoundTripper) i
 		if query == "" {
 			return fail(stdout, result, "-query is required for query mode")
 		}
+		if err := validateQueryEscaping(query); err != nil {
+			return fail(stdout, result, err.Error())
+		}
 		data, took, err := callAPI(ctx, client, cfg, "/api/v1/query", url.Values{"query": {query}})
 		if err != nil {
 			return fail(stdout, result, err.Error())
@@ -101,6 +104,9 @@ func run(args []string, stdout, stderr io.Writer, transport http.RoundTripper) i
 	case "range":
 		if query == "" {
 			return fail(stdout, result, "-query is required for range mode")
+		}
+		if err := validateQueryEscaping(query); err != nil {
+			return fail(stdout, result, err.Error())
 		}
 		startTime, endTime, err := parseRange(start, end)
 		if err != nil {
@@ -266,6 +272,14 @@ func callAPI(ctx context.Context, client *http.Client, cfg config, path string, 
 		return nil, took, errors.New("API status: " + envelope.Status)
 	}
 	return envelope.Data, took, nil
+}
+
+func validateQueryEscaping(query string) error {
+	if !strings.Contains(query, `\"`) {
+		return nil
+	}
+	fixed := strings.ReplaceAll(query, `\"`, `"`)
+	return fmt.Errorf("PromQL query contains backslash-escaped double quotes (`\\\"`). In a PowerShell single-quoted argument, keep selector quotes as plain double quotes, for example `-query 'up{job=\"snmp_exporter\"}'`; do not write `\\\"`. Suggested query: %s", fixed)
 }
 
 func summarizeData(data json.RawMessage, limit int) map[string]interface{} {

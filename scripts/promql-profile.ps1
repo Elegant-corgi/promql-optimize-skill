@@ -235,6 +235,48 @@ function Set-PromQLProbeEnvironment {
     }
 }
 
+function Get-PromQLProbeEscapingError {
+    param(
+        [string[]]$Arguments
+    )
+
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $argument = $Arguments[$i]
+        $query = $null
+        if ($argument -eq "-query" -and ($i + 1) -lt $Arguments.Count) {
+            $query = $Arguments[$i + 1]
+        }
+        elseif ($argument.StartsWith("-query=")) {
+            $query = $argument.Substring("-query=".Length)
+        }
+
+        if ($null -ne $query -and $query.Contains('\"')) {
+            $fixed = $query.Replace('\"', '"')
+            return 'PromQL query contains backslash-escaped double quotes (`\"`). In a PowerShell single-quoted argument, keep selector quotes as plain double quotes, for example `-query ''up{job="snmp_exporter"}''`; do not write `\"`. Suggested query: ' + $fixed
+        }
+    }
+
+    return $null
+}
+
+function Get-PromQLProbeMode {
+    param(
+        [string[]]$Arguments
+    )
+
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        $argument = $Arguments[$i]
+        if ($argument -eq "-mode" -and ($i + 1) -lt $Arguments.Count) {
+            return $Arguments[$i + 1]
+        }
+        elseif ($argument.StartsWith("-mode=")) {
+            return $argument.Substring("-mode=".Length)
+        }
+    }
+
+    return "query"
+}
+
 function Invoke-PromQLProbe {
     param(
         [Parameter(ValueFromRemainingArguments = $true)]
@@ -256,6 +298,17 @@ function Invoke-PromQLProbe {
     $profileInfo = Get-PromQLProfile -Name $resolvedName
 
     Set-PromQLProbeEnvironment -ProfileInfo $profileInfo -RawProfile $profile
+
+    $escapingError = Get-PromQLProbeEscapingError -Arguments $Arguments
+    if ($escapingError) {
+        [pscustomobject]@{
+            status = "error"
+            mode = Get-PromQLProbeMode -Arguments $Arguments
+            datasource = $profileInfo.datasource
+            error = $escapingError
+        } | ConvertTo-Json -Depth 4
+        return
+    }
 
     Push-Location -LiteralPath $script:PromQLProbeDir
     try {

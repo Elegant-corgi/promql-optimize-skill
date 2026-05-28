@@ -29,7 +29,7 @@ func TestQueryModeReturnsJSON(t *testing.T) {
 		if r.URL.Path != "/api/v1/query" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		if got := r.URL.Query().Get("query"); got != "up" {
+		if got := r.URL.Query().Get("query"); got != `up{job="prometheus"}` {
 			t.Fatalf("unexpected query %q", got)
 		}
 		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{"job":"prometheus"},"value":[1,"1"]}]}}`))
@@ -38,7 +38,7 @@ func TestQueryModeReturnsJSON(t *testing.T) {
 	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", server.URL)
 
 	var stdout bytes.Buffer
-	code := run([]string{"-query", "up"}, &stdout, &bytes.Buffer{}, http.DefaultTransport)
+	code := run([]string{"-query", `up{job="prometheus"}`}, &stdout, &bytes.Buffer{}, http.DefaultTransport)
 
 	if code != 0 {
 		t.Fatalf("expected success, got %d: %s", code, stdout.String())
@@ -52,6 +52,80 @@ func TestQueryModeReturnsJSON(t *testing.T) {
 	}
 	if result.Evidence["endpoint"] != "/api/v1/query" {
 		t.Fatalf("unexpected evidence: %#v", result.Evidence)
+	}
+}
+
+func TestQueryModeRejectsBackslashEscapedQuotes(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[]}}`))
+	}))
+	defer server.Close()
+	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", server.URL)
+	t.Setenv("PROMQL_OPTIMIZE_TOKEN", "super-secret-token")
+	t.Setenv("PROMQL_OPTIMIZE_HEADERS", `{"X-Scope":"internal"}`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"-query", `up{job=\"snmp_exporter\"}`}, &stdout, &stderr, http.DefaultTransport)
+
+	if code == 0 {
+		t.Fatal("expected escaping validation failure")
+	}
+	if called {
+		t.Fatal("request should not be sent when query contains backslash-escaped quotes")
+	}
+	var result probeResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	for _, expected := range []string{
+		"backslash-escaped double quotes",
+		`up{job="snmp_exporter"}`,
+		"PowerShell single-quoted argument",
+	} {
+		if !strings.Contains(result.Error, expected) {
+			t.Fatalf("expected %q in error, got %s", expected, result.Error)
+		}
+	}
+	output := stdout.String() + stderr.String()
+	for _, sensitive := range []string{server.URL, "super-secret-token", "X-Scope"} {
+		if strings.Contains(output, sensitive) {
+			t.Fatalf("sensitive data leaked: %s", output)
+		}
+	}
+}
+
+func TestRangeModeRejectsBackslashEscapedQuotes(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	}))
+	defer server.Close()
+	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	code := run([]string{
+		"-mode", "range",
+		"-query", `rate(http_requests_total{job=\"api\"}[5m])`,
+		"-start", "2026-05-22T00:00:00Z",
+		"-end", "2026-05-22T00:30:00Z",
+	}, &stdout, &bytes.Buffer{}, http.DefaultTransport)
+
+	if code == 0 {
+		t.Fatal("expected escaping validation failure")
+	}
+	if called {
+		t.Fatal("request should not be sent when range query contains backslash-escaped quotes")
+	}
+	var result probeResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if !strings.Contains(result.Error, `rate(http_requests_total{job="api"}[5m])`) {
+		t.Fatalf("expected suggested query, got %s", result.Error)
 	}
 }
 

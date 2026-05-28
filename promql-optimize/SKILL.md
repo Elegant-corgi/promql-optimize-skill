@@ -35,6 +35,8 @@ Use this skill to diagnose PromQL performance problems and produce practical rew
    - Use `scripts/promql-probe` directly only when `PROMQL_OPTIMIZE_BASE_URL` is already set in the current process.
    - Otherwise, run `go run ./scripts/promql-probe` from this skill directory after the environment has been prepared.
    - Keep probes narrow. Prefer instant query, labels, metadata, or short query_range windows before series scans.
+   - PowerShell quoting rule: when passing PromQL with label selectors to `Invoke-PromQLProbe -query`, prefer single quotes around the whole query and keep selector double quotes unescaped. Correct: `Invoke-PromQLProbe -query 'up{job="snmp_exporter"}'`. Wrong: `Invoke-PromQLProbe -query 'up{job=\"snmp_exporter\"}'`.
+   - If a probe returns `API returned HTTP 400` and the query text contains `\"`, treat it as a local quoting/escaping mistake first. Retry with plain selector quotes before diagnosing missing metrics, datasource incompatibility, or backend parsing behavior.
    - Never print tokens, custom headers, or private endpoints in the final answer.
 4. Generate recommendations:
    - Give an optimized PromQL expression when possible.
@@ -82,6 +84,10 @@ Use the wrapper for probing only after the user explicitly asks for real API evi
 Get-PromQLProfileList
 Use-PromQLProfile <name>
 Invoke-PromQLProbe -query '<promql>'
+# Correct PowerShell selector quoting:
+Invoke-PromQLProbe -query 'up{job="snmp_exporter"}'
+# Do not backslash-escape selector quotes in a single-quoted argument:
+# Invoke-PromQLProbe -query 'up{job=\"snmp_exporter\"}'
 ```
 
 If a profile is already selected, `Invoke-PromQLProbe` reads that profile, resolves token/header environment variables, sets `PROMQL_OPTIMIZE_*` for the child probe process, and runs the read-only probe. Treat profile names in the prompt as context until this explicit confirmation exists.
