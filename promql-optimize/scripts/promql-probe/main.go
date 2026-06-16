@@ -35,9 +35,16 @@ type probeResult struct {
 }
 
 type apiEnvelope struct {
-	Status string          `json:"status"`
-	Data   json.RawMessage `json:"data"`
-	Error  string          `json:"error"`
+	Status    string          `json:"status"`
+	Data      json.RawMessage `json:"data"`
+	Error     string          `json:"error"`
+	ErrorType string          `json:"errorType"`
+}
+
+type rangeSummary struct {
+	SeriesCount int                      `json:"series_count"`
+	PointCount  int                      `json:"point_count"`
+	Sample      []map[string]interface{} `json:"sample,omitempty"`
 }
 
 func main() {
@@ -47,23 +54,31 @@ func main() {
 func run(args []string, stdout, stderr io.Writer, transport http.RoundTripper) int {
 	var mode string
 	var query string
+	var oldQuery string
+	var newQuery string
 	var start string
 	var end string
 	var step string
 	var label string
 	var metric string
 	var matcherList string
+	var expectNewEmpty bool
+	var expectNewNonEmpty bool
 
 	flags := flag.NewFlagSet("promql-probe", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.StringVar(&mode, "mode", "query", "probe mode: query, range, series, labels, label-values, metadata")
+	flags.StringVar(&mode, "mode", "query", "probe mode: query, range, compare-range, series, labels, label-values, metadata")
 	flags.StringVar(&query, "query", "", "PromQL query for query or range mode")
+	flags.StringVar(&oldQuery, "old-query", "", "baseline PromQL query for compare-range mode")
+	flags.StringVar(&newQuery, "new-query", "", "candidate PromQL query for compare-range mode")
 	flags.StringVar(&start, "start", "", "range start as RFC3339 or unix seconds")
 	flags.StringVar(&end, "end", "", "range end as RFC3339 or unix seconds")
 	flags.StringVar(&step, "step", "60s", "range step duration or seconds")
 	flags.StringVar(&label, "label", "", "label name for label-values mode")
 	flags.StringVar(&metric, "metric", "", "metric name for metadata mode")
 	flags.StringVar(&matcherList, "matchers", "", "comma-separated series matchers for series mode")
+	flags.BoolVar(&expectNewEmpty, "expect-new-empty", false, "compare-range success criterion: candidate query returns no samples")
+	flags.BoolVar(&expectNewNonEmpty, "expect-new-nonempty", false, "compare-range success criterion: candidate query returns samples")
 	if err := flags.Parse(args); err != nil {
 		writeJSON(stdout, probeResult{Status: "error", Error: err.Error()})
 		return 2
@@ -132,6 +147,70 @@ func run(args []string, stdout, stderr io.Writer, transport http.RoundTripper) i
 		result.Evidence["duration_ms"] = took.Milliseconds()
 		result.Evidence["range_seconds"] = int64(endTime.Sub(startTime).Seconds())
 		result.Evidence["result"] = summarizeData(data, cfg.MaxLabelValues)
+	case "compare-range":
+		if oldQuery == "" {
+			return fail(stdout, result, "-old-query is required for compare-range mode")
+		}
+		if newQuery == "" {
+			return fail(stdout, result, "-new-query is required for compare-range mode")
+		}
+		if expectNewEmpty && expectNewNonEmpty {
+			return fail(stdout, result, "-expect-new-empty and -expect-new-nonempty cannot both be set")
+		}
+		if err := validateQueryEscaping(oldQuery); err != nil {
+			return fail(stdout, result, err.Error())
+		}
+		if err := validateQueryEscaping(newQuery); err != nil {
+			return fail(stdout, result, err.Error())
+		}
+		startTime, endTime, err := parseRange(start, end)
+		if err != nil {
+			return fail(stdout, result, err.Error())
+		}
+		if endTime.Sub(startTime) > cfg.MaxRange {
+			return fail(stdout, result, fmt.Sprintf("range %s exceeds safety limit %s; narrow the window or set PROMQL_OPTIMIZE_MAX_RANGE", endTime.Sub(startTime), cfg.MaxRange))
+		}
+		stepValue, err := parseStep(step)
+		if err != nil {
+			return fail(stdout, result, err.Error())
+		}
+		values := func(q string) url.Values {
+			return url.Values{
+				"query": {q},
+				"start": {formatPromTime(startTime)},
+				"end":   {formatPromTime(endTime)},
+				"step":  {stepValue},
+			}
+		}
+		oldData, oldTook, err := callAPI(ctx, client, cfg, "/api/v1/query_range", values(oldQuery))
+		if err != nil {
+			return fail(stdout, result, "old query failed: "+err.Error())
+		}
+		newData, newTook, err := callAPI(ctx, client, cfg, "/api/v1/query_range", values(newQuery))
+		if err != nil {
+			return fail(stdout, result, "new query failed: "+err.Error())
+		}
+		oldSummary := summarizeRangeData(oldData, cfg.MaxLabelValues)
+		newSummary := summarizeRangeData(newData, cfg.MaxLabelValues)
+		result.Evidence["endpoint"] = "/api/v1/query_range"
+		result.Evidence["old_duration_ms"] = oldTook.Milliseconds()
+		result.Evidence["new_duration_ms"] = newTook.Milliseconds()
+		result.Evidence["range_seconds"] = int64(endTime.Sub(startTime).Seconds())
+		result.Evidence["old"] = oldSummary
+		result.Evidence["new"] = newSummary
+		criteria := map[string]interface{}{
+			"old_has_samples": oldSummary.PointCount > 0,
+			"new_has_samples": newSummary.PointCount > 0,
+		}
+		if expectNewEmpty {
+			criteria["expectation"] = "new_empty"
+			criteria["met"] = newSummary.PointCount == 0
+		}
+		if expectNewNonEmpty {
+			criteria["expectation"] = "new_nonempty"
+			criteria["met"] = newSummary.PointCount > 0
+		}
+		result.Evidence["success_criteria"] = criteria
 	case "series":
 		matchers := splitCSV(matcherList)
 		if len(matchers) == 0 {
@@ -259,7 +338,7 @@ func callAPI(ctx context.Context, client *http.Client, cfg config, path string, 
 		return nil, took, errors.New("failed to read response")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, took, fmt.Errorf("API returned HTTP %d", resp.StatusCode)
+		return nil, took, fmt.Errorf("API returned HTTP %d%s", resp.StatusCode, formatAPIError(body))
 	}
 	var envelope apiEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -272,6 +351,44 @@ func callAPI(ctx context.Context, client *http.Client, cfg config, path string, 
 		return nil, took, errors.New("API status: " + envelope.Status)
 	}
 	return envelope.Data, took, nil
+}
+
+func formatAPIError(body []byte) string {
+	var envelope apiEnvelope
+	if err := json.Unmarshal(body, &envelope); err == nil {
+		parts := []string{}
+		if envelope.ErrorType != "" {
+			parts = append(parts, "errorType="+sanitizeAPIError(envelope.ErrorType))
+		}
+		if envelope.Error != "" {
+			parts = append(parts, "error="+sanitizeAPIError(envelope.Error))
+		}
+		if len(parts) > 0 {
+			return " (" + strings.Join(parts, "; ") + ")"
+		}
+	}
+	return ""
+}
+
+func sanitizeAPIError(value string) string {
+	replacements := []string{
+		os.Getenv("PROMQL_OPTIMIZE_TOKEN"),
+		os.Getenv("PROMQL_OPTIMIZE_HEADERS"),
+	}
+	for _, sensitive := range replacements {
+		if sensitive != "" {
+			value = strings.ReplaceAll(value, sensitive, "[redacted]")
+		}
+	}
+	for _, marker := range []string{"Authorization", "Cookie", "Set-Cookie"} {
+		if strings.Contains(strings.ToLower(value), strings.ToLower(marker)) {
+			return "[redacted sensitive API error]"
+		}
+	}
+	if len(value) > 1000 {
+		return value[:1000] + "...[truncated]"
+	}
+	return value
 }
 
 func validateQueryEscaping(query string) error {
@@ -305,6 +422,48 @@ func summarizeData(data json.RawMessage, limit int) map[string]interface{} {
 		summary["value"] = typed
 	}
 	return summary
+}
+
+func summarizeRangeData(data json.RawMessage, limit int) rangeSummary {
+	var payload struct {
+		ResultType string `json:"resultType"`
+		Result     []struct {
+			Metric map[string]string `json:"metric"`
+			Values [][]interface{}   `json:"values"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return rangeSummary{}
+	}
+	summary := rangeSummary{SeriesCount: len(payload.Result)}
+	sampleLimit := min(limit, 10)
+	for _, series := range payload.Result {
+		pointCount := len(series.Values)
+		summary.PointCount += pointCount
+		if len(summary.Sample) >= sampleLimit || pointCount == 0 {
+			continue
+		}
+		first := series.Values[0]
+		last := series.Values[pointCount-1]
+		summary.Sample = append(summary.Sample, map[string]interface{}{
+			"metric":      series.Metric,
+			"first":       summarizeRangePoint(first),
+			"last":        summarizeRangePoint(last),
+			"point_count": pointCount,
+		})
+	}
+	return summary
+}
+
+func summarizeRangePoint(point []interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if len(point) >= 1 {
+		out["timestamp"] = point[0]
+	}
+	if len(point) >= 2 {
+		out["value"] = point[1]
+	}
+	return out
 }
 
 type authTransport struct {

@@ -101,6 +101,95 @@ Check:
 - Ensure every claimed value is excluded from generic or catch-all peer alerts.
 - If live evidence is available, compare candidate peer alerts with `and` or selector reasoning to confirm no shared output series.
 
+## Alert Semantics Patterns
+
+Use these patterns when the user's goal is alert behavior, not only query cost. Always identify what "recover" means before choosing a template.
+
+### Trigger Once, Hold for N, Then Recover
+
+Symptom:
+
+```promql
+error_ratio > 2
+```
+
+Goal:
+
+- A short spike should become a continuous alert for 3 days.
+- A target that has been continuously bad for the full 3 days should disappear.
+- Output is boolean `1`; configure the alert threshold as `> 0`.
+
+Prefer:
+
+```promql
+(
+  max_over_time(((error_ratio) > bool 2)[3d:5m]) > 0
+)
+unless
+(
+  min_over_time(((error_ratio) > bool 2)[3d:5m]) > 0
+)
+```
+
+Notes:
+
+- `max_over_time` turns any trigger inside the window into a held alert.
+- `min_over_time` identifies series that were continuously triggering for the entire window; `unless` removes them.
+- Choose the subquery resolution, such as `5m`, to match the alert evaluation cadence and datasource cost.
+
+### Recover After N Without Successful Responses
+
+Use this when the target is still being probed, but should be treated as recovered after no successful response has been seen for N.
+
+```promql
+(error_ratio > 2)
+and
+(increase(successful_response_count[3d]) > 0)
+```
+
+Notes:
+
+- This keeps the alert only while there was at least one success in the lookback window.
+- It is different from "hold each trigger for 3 days"; it may produce sparse graph points if the base condition is sparse.
+
+### Recover After N Without Requests
+
+Use this only when request generation itself is the desired liveness signal.
+
+```promql
+(error_ratio > 2)
+and
+(increase(requests_total[3d]) > 0)
+```
+
+Pitfall:
+
+- `requests_total` means the prober is still sending requests, not that the target is healthy. In smokeping-style probes it can keep increasing while the target has 100% packet loss.
+
+### Recover After N Without Scraped Samples
+
+Use this when disappearance of scraped samples should suppress or recover the alert.
+
+```promql
+(error_ratio > 2)
+and
+present_over_time(source_metric[3d])
+```
+
+For pure absence alerts, use `absent_over_time(source_metric[3d])`, but remember it returns synthetic label sets and may not preserve the original target labels.
+
+### Verification
+
+For any query involving "recover", "continuous", "hold", or "after N", verify with `query_range` across the full target window. With the bundled probe, compare old and new expressions:
+
+```powershell
+Invoke-PromQLProbe -Profile <profile> -mode compare-range `
+  -old-query '<old promql>' `
+  -new-query '<new promql>' `
+  -start <start> -end <end> -step 10m `
+  -expect-new-empty
+```
+
 ## Wide Range and Query Range
 
 Symptom:

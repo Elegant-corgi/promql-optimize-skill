@@ -184,6 +184,123 @@ func TestRangeSafetyLimitBlocksRequest(t *testing.T) {
 	}
 }
 
+func TestHTTPErrorIncludesSafeAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"status":"error","errorType":"bad_data","error":"invalid parameter \"query\": parse error"}`))
+	}))
+	defer server.Close()
+	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	code := run([]string{"-query", "up{"}, &stdout, &bytes.Buffer{}, http.DefaultTransport)
+
+	if code == 0 {
+		t.Fatal("expected API failure")
+	}
+	var result probeResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	for _, expected := range []string{"HTTP 422", "errorType=bad_data", "parse error"} {
+		if !strings.Contains(result.Error, expected) {
+			t.Fatalf("expected %q in error, got %s", expected, result.Error)
+		}
+	}
+}
+
+func TestHTTPErrorRedactsSensitiveAPIError(t *testing.T) {
+	const secret = "super-secret-token"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"status":"error","errorType":"bad_data","error":"Authorization failed for super-secret-token"}`))
+	}))
+	defer server.Close()
+	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", server.URL)
+	t.Setenv("PROMQL_OPTIMIZE_TOKEN", secret)
+
+	var stdout bytes.Buffer
+	code := run([]string{"-query", "up"}, &stdout, &bytes.Buffer{}, http.DefaultTransport)
+
+	if code == 0 {
+		t.Fatal("expected API failure")
+	}
+	if strings.Contains(stdout.String(), secret) || strings.Contains(stdout.String(), "Authorization failed") {
+		t.Fatalf("sensitive data leaked: %s", stdout.String())
+	}
+}
+
+func TestCompareRangeSummarizesOldAndNewQueries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		switch r.URL.Query().Get("query") {
+		case "old":
+			_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"old"},"values":[[1,"1"],[2,"2"]]}]}}`))
+		case "new":
+			_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		default:
+			t.Fatalf("unexpected query %q", r.URL.Query().Get("query"))
+		}
+	}))
+	defer server.Close()
+	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	code := run([]string{
+		"-mode", "compare-range",
+		"-old-query", "old",
+		"-new-query", "new",
+		"-start", "2026-05-22T00:00:00Z",
+		"-end", "2026-05-22T00:30:00Z",
+		"-step", "60s",
+		"-expect-new-empty",
+	}, &stdout, &bytes.Buffer{}, http.DefaultTransport)
+
+	if code != 0 {
+		t.Fatalf("expected success, got %d: %s", code, stdout.String())
+	}
+	var result probeResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	oldSummary := result.Evidence["old"].(map[string]interface{})
+	newSummary := result.Evidence["new"].(map[string]interface{})
+	criteria := result.Evidence["success_criteria"].(map[string]interface{})
+	if oldSummary["series_count"].(float64) != 1 || oldSummary["point_count"].(float64) != 2 {
+		t.Fatalf("unexpected old summary: %#v", oldSummary)
+	}
+	if newSummary["series_count"].(float64) != 0 || newSummary["point_count"].(float64) != 0 {
+		t.Fatalf("unexpected new summary: %#v", newSummary)
+	}
+	if criteria["met"] != true {
+		t.Fatalf("expected criteria to be met: %#v", criteria)
+	}
+}
+
+func TestCompareRangeRejectsConflictingExpectations(t *testing.T) {
+	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", "http://127.0.0.1:9090")
+	var stdout bytes.Buffer
+
+	code := run([]string{
+		"-mode", "compare-range",
+		"-old-query", "old",
+		"-new-query", "new",
+		"-start", "2026-05-22T00:00:00Z",
+		"-end", "2026-05-22T00:30:00Z",
+		"-expect-new-empty",
+		"-expect-new-nonempty",
+	}, &stdout, &bytes.Buffer{}, http.DefaultTransport)
+
+	if code == 0 {
+		t.Fatal("expected conflicting expectations failure")
+	}
+	if !strings.Contains(stdout.String(), "cannot both be set") {
+		t.Fatalf("expected conflict message, got %s", stdout.String())
+	}
+}
+
 func TestSeriesMatcherLimit(t *testing.T) {
 	t.Setenv("PROMQL_OPTIMIZE_BASE_URL", "http://127.0.0.1:9090")
 	t.Setenv("PROMQL_OPTIMIZE_MAX_SERIES_MATCHERS", "1")

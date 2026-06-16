@@ -1,6 +1,6 @@
 ---
 name: promql-optimize
-description: Diagnose and optimize PromQL queries for Prometheus, VictoriaMetrics, Thanos, Mimir, and compatible APIs. Use when Codex needs to analyze slow or expensive PromQL, optionally collect safe read-only evidence from a real metrics API only after explicit user confirmation, use environment variables or an explicitly selected local wrapper profile, rewrite queries, explain label cardinality or range/step problems, and draft recording rule YAML without publishing or reloading rules.
+description: Diagnose and optimize PromQL queries and alert semantics for Prometheus, VictoriaMetrics, Thanos, Mimir, and compatible APIs. Use when Codex needs to analyze slow or expensive PromQL, verify alert behavior over time ranges, compare old/new query results, optionally collect safe read-only evidence from a real metrics API only after explicit user confirmation, use environment variables or an explicitly selected local wrapper profile, rewrite queries, explain label cardinality or range/step problems, and draft recording rule YAML without publishing or reloading rules.
 ---
 
 # PromQL Optimize
@@ -11,6 +11,8 @@ Use this skill to diagnose PromQL performance problems and produce practical rew
 
 1. Clarify the target query and context:
    - PromQL expression, intended dashboard or alert use, time range, step, datasource type, and observed symptom.
+   - For alert work, classify the intent before rewriting: instant threshold, sustained alert, trigger-and-hold behavior, timeout-based recovery, or Grafana graph display. If the user says "recover after N", identify the recovery basis: first trigger time, continuous trigger duration, no successful responses, no requests, or no scraped samples.
+   - Do not treat request counters as health signals unless the user explicitly says "still being requested" is the health condition. For probes such as smokeping, `*_requests_total` may keep increasing while the target is fully failing.
    - Apply the confirmation gate before reading local profiles, checking environment variables, running helper scripts, or giving optimization output.
    - Treat datasource names, profile names, cluster names, or lines like `数据源：<name>` as context only. They are not consent to use a real datasource and are not proof that a real API environment is available.
    - Treat only explicit phrases such as "use real datasource", "live API evidence", "allow probe", "调用真实 API", "允许探测", or "使用真实数据源" as intent to use a real datasource.
@@ -27,7 +29,7 @@ Use this skill to diagnose PromQL performance problems and produce practical rew
    - For choice 3, continue with static optimization only after the user confirms static-only analysis.
    - If the user explicitly asks for real datasource usage, first confirm the environment variables are set or the user has selected a local wrapper profile. Only then inspect environment/profile state or run probes.
 2. Inspect the query statically before calling an API:
-   - Identify wide ranges, high-cardinality labels, regex matchers, joins, subqueries, histogram usage, aggregation order, and repeated expensive expressions.
+   - Identify wide ranges, high-cardinality labels, regex matchers, joins, subqueries, histogram usage, aggregation order, repeated expensive expressions, and alert time semantics.
    - Load `references/promql-optimization-patterns.md` for detailed rewrite patterns.
 3. Collect live evidence only when useful:
    - Do not inspect or call local configuration, defaults, profiles, or `promql-probe` merely because a datasource/profile name appears in the prompt; require explicit user intent to use a real datasource.
@@ -35,6 +37,7 @@ Use this skill to diagnose PromQL performance problems and produce practical rew
    - Use `scripts/promql-probe` directly only when `PROMQL_OPTIMIZE_BASE_URL` is already set in the current process.
    - Otherwise, run `go run ./scripts/promql-probe` from this skill directory after the environment has been prepared.
    - Keep probes narrow. Prefer instant query, labels, metadata, or short query_range windows before series scans.
+   - When the user asks for recovery, continuity, "after N days", "keeps firing", or graph behavior, verify with `query_range` over the target window. Prefer `compare-range` to compare the old and candidate query with the same start/end/step.
    - PowerShell quoting rule: when passing PromQL with label selectors to `Invoke-PromQLProbe -query`, prefer single quotes around the whole query and keep selector double quotes unescaped. Correct: `Invoke-PromQLProbe -query 'up{job="snmp_exporter"}'`. Wrong: `Invoke-PromQLProbe -query 'up{job=\"snmp_exporter\"}'`.
    - If a probe returns `API returned HTTP 400` and the query text contains `\"`, treat it as a local quoting/escaping mistake first. Retry with plain selector quotes before diagnosing missing metrics, datasource incompatibility, or backend parsing behavior.
    - Never print tokens, custom headers, or private endpoints in the final answer.
@@ -84,6 +87,8 @@ Use the wrapper for probing only after the user explicitly asks for real API evi
 Get-PromQLProfileList
 Use-PromQLProfile <name>
 Invoke-PromQLProbe -query '<promql>'
+Invoke-PromQLProbe -Profile aliyun -query '<promql>'
+Invoke-PromQLProbe -Profile aliyun -mode compare-range -old-query '<old promql>' -new-query '<new promql>' -start 2026-06-08T00:00:00+08:00 -end 2026-06-12T23:59:59+08:00 -step 10m -expect-new-empty
 # Correct PowerShell selector quoting:
 Invoke-PromQLProbe -query 'up{job="snmp_exporter"}'
 # Do not backslash-escape selector quotes in a single-quoted argument:
@@ -99,6 +104,7 @@ Run from the repository root or the skill directory:
 ```powershell
 go run ./promql-optimize/scripts/promql-probe -query 'sum(rate(http_requests_total[5m]))'
 go run ./promql-optimize/scripts/promql-probe -mode range -query 'sum(rate(http_requests_total[5m]))' -start 2026-05-22T00:00:00Z -end 2026-05-22T01:00:00Z -step 60s
+go run ./promql-optimize/scripts/promql-probe -mode compare-range -old-query 'up' -new-query 'up == 0' -start 2026-05-22T00:00:00Z -end 2026-05-22T01:00:00Z -step 60s -expect-new-empty
 go run ./promql-optimize/scripts/promql-probe -mode label-values -label job
 go run ./promql-optimize/scripts/promql-probe -mode metadata -metric http_requests_total
 ```

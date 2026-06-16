@@ -236,11 +236,11 @@ function Get-PromQLProbeEscapingError {
     for ($i = 0; $i -lt $Arguments.Count; $i++) {
         $argument = $Arguments[$i]
         $query = $null
-        if ($argument -eq "-query" -and ($i + 1) -lt $Arguments.Count) {
+        if ($argument -in @("-query", "-old-query", "-new-query") -and ($i + 1) -lt $Arguments.Count) {
             $query = $Arguments[$i + 1]
         }
-        elseif ($argument.StartsWith("-query=")) {
-            $query = $argument.Substring("-query=".Length)
+        elseif ($argument.StartsWith("-query=") -or $argument.StartsWith("-old-query=") -or $argument.StartsWith("-new-query=")) {
+            $query = $argument.Substring($argument.IndexOf("=") + 1)
         }
 
         if ($null -ne $query -and $query.Contains('\"')) {
@@ -272,6 +272,8 @@ function Get-PromQLProbeMode {
 
 function Invoke-PromQLProbe {
     param(
+        [string]$Profile,
+
         [Parameter(ValueFromRemainingArguments = $true)]
         [string[]]$Arguments
     )
@@ -280,12 +282,15 @@ function Invoke-PromQLProbe {
         throw "找不到 promql-probe 目录：$script:PromQLProbeDir"
     }
 
-    if (-not (Test-Path -LiteralPath $script:PromQLCurrentProfilePath)) {
-        throw "当前 PromQL profile 未设置，请先执行 Use-PromQLProfile <name>。"
+    if ([string]::IsNullOrWhiteSpace($Profile) -and -not (Test-Path -LiteralPath $script:PromQLCurrentProfilePath)) {
+        throw "当前 PromQL profile 未设置，请先执行 Use-PromQLProfile <name>，或使用 Invoke-PromQLProbe -Profile <name>。"
     }
 
     $config = Read-PromQLProfileConfig
-    $currentName = (Get-Content -LiteralPath $script:PromQLCurrentProfilePath -Raw -Encoding UTF8).Trim()
+    $currentName = $Profile
+    if ([string]::IsNullOrWhiteSpace($currentName)) {
+        $currentName = (Get-Content -LiteralPath $script:PromQLCurrentProfilePath -Raw -Encoding UTF8).Trim()
+    }
     $resolvedName = Resolve-PromQLProfile -Name $currentName -Config $config
     $profile = $config.$resolvedName
     $profileInfo = Get-PromQLProfile -Name $resolvedName
